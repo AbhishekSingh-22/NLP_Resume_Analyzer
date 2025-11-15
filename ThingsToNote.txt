@@ -1,0 +1,3 @@
+Deciding context similarity model --> LDA --> BERT
+Dataset selection problem --> OCR Problem --> resume data problem
+Scoring algorithm --> Hit and trial

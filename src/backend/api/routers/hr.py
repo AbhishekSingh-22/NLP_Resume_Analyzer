@@ -6,7 +6,7 @@ from src.backend.services.extraction import extract_all_from_pdf
 from src.backend.services.nlp_ner import process_resume_text
 from src.backend.services.embeddings import generate_embedding
 from src.backend.services.scoring import calculate_fit_score
-from src.backend.services.llm_summary import get_candidate_feedback
+from src.backend.services.llm_summary import get_candidate_feedback, summarize_for_embedding, evaluate_skill_compatibility
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -20,7 +20,9 @@ async def bulk_analyze_resumes(
         raise HTTPException(status_code=400, detail="Must upload a ZIP file containing PDFs.")
     
     try:
-        jd_emb = generate_embedding(job_description)
+        # Pre-summarize the JD once (shared across all resumes)
+        jd_summary = summarize_for_embedding(job_description, text_type="job_description")
+        jd_emb = generate_embedding(jd_summary)
         zip_bytes = await zip_file.read()
         
         results = []
@@ -40,9 +42,21 @@ async def bulk_analyze_resumes(
                         job_description=job_description
                     )
                     
-                    emb_text = (parsed_data.get("name") or "") + "\n" + extracted["first_page_text"]
-                    resume_emb = generate_embedding(emb_text)
-                    fit_score = calculate_fit_score(resume_emb, jd_emb, parsed_data)
+                    # Pre-embedding summarization for each resume
+                    resume_input = (parsed_data.get("name") or "") + "\n" + extracted["first_page_text"]
+                    resume_summary = summarize_for_embedding(resume_input, text_type="resume")
+                    resume_emb = generate_embedding(resume_summary)
+                    
+                    # LLM Skill Compatibility evaluation
+                    jd_match = parsed_data.get("jd_match", {})
+                    llm_compat_score = evaluate_skill_compatibility(
+                        resume_skills=parsed_data.get("skills", []),
+                        jd_skills=jd_match.get("jd_skills", []),
+                        matched_skills=jd_match.get("matched", []),
+                        missing_skills=jd_match.get("missing", [])
+                    )
+                    
+                    fit_score = calculate_fit_score(resume_emb, jd_emb, parsed_data, llm_compat_score)
                     
                     jd_match = parsed_data.get("jd_match", {})
                     feedback = get_candidate_feedback(

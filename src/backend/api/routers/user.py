@@ -3,7 +3,7 @@ from src.backend.services.extraction import extract_all_from_pdf
 from src.backend.services.nlp_ner import process_resume_text
 from src.backend.services.embeddings import generate_embedding
 from src.backend.services.scoring import calculate_fit_score
-from src.backend.services.llm_summary import get_candidate_feedback
+from src.backend.services.llm_summary import get_candidate_feedback, summarize_for_embedding, evaluate_skill_compatibility
 import logging
 
 router = APIRouter()
@@ -37,13 +37,37 @@ async def analyze_resume(
             job_description=job_description
         )
         
-        # Stage 3: Embeddings using full first page + name
-        emb_text = (parsed_data.get("name") or "") + "\n" + first_page_text
-        resume_emb = generate_embedding(emb_text)
-        jd_emb = generate_embedding(job_description)
+        # Stage 3: Pre-embedding keyword summarization via Groq
+        resume_input = (parsed_data.get("name") or "") + "\n" + first_page_text
+        resume_summary = summarize_for_embedding(resume_input, text_type="resume")
+        jd_summary = summarize_for_embedding(job_description, text_type="job_description")
         
-        # Stage 4: Scoring
-        fit_score = calculate_fit_score(resume_emb, jd_emb, parsed_data)
+        # ─── Debug: Print summaries to terminal for verification ───
+        print("\n" + "="*80)
+        print("📄 RESUME SUMMARY (sent to embedding model):")
+        print("-"*80)
+        print(resume_summary)
+        print("\n" + "="*80)
+        print("📋 JD SUMMARY (sent to embedding model):")
+        print("-"*80)
+        print(jd_summary)
+        print("="*80 + "\n")
+        
+        # Stage 4: Embeddings on the summarized text (not raw)
+        resume_emb = generate_embedding(resume_summary)
+        jd_emb = generate_embedding(jd_summary)
+        
+        # Stage 5: LLM Skill Compatibility (transferable skills evaluation)
+        jd_match = parsed_data.get("jd_match", {})
+        llm_compat_score = evaluate_skill_compatibility(
+            resume_skills=parsed_data.get("skills", []),
+            jd_skills=jd_match.get("jd_skills", []),
+            matched_skills=jd_match.get("matched", []),
+            missing_skills=jd_match.get("missing", [])
+        )
+        
+        # Stage 6: Scoring (with LLM compatibility)
+        fit_score = calculate_fit_score(resume_emb, jd_emb, parsed_data, llm_compat_score)
         
         # Stage 5: LLM Feedback (JD-scoped)
         jd_match = parsed_data.get("jd_match", {})
